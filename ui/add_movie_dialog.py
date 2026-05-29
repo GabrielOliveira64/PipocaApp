@@ -372,6 +372,17 @@ class AddMovieDialog(QDialog):
         search_label.setStyleSheet("font-size: 16px; font-weight: bold;")
         search_section.addWidget(search_label)
 
+        # Caminho do arquivo — visível apenas em modo edição
+        if self.edit_mode and self.selected_file_path:
+            file_path_label = QLabel(f"📁  {self.selected_file_path}")
+            file_path_label.setWordWrap(True)
+            file_path_label.setStyleSheet("""
+                font-size: 11px;
+                color: #555;
+                padding: 4px 2px 8px 2px;
+            """)
+            search_section.addWidget(file_path_label)
+
         search_row = QHBoxLayout()
         self.search_edit = QLineEdit()
         self.search_edit.setPlaceholderText("Digite o título do filme...")

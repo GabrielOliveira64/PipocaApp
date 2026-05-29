@@ -256,6 +256,14 @@ class MovieInfoOverlay(QWidget):
         scroll.setWidget(overview_widget)
         info_layout.addWidget(scroll)
 
+        # ── Caminho do arquivo ───────────────────────────────────────
+        file_path = self.movie.get("file_path", "")
+        if file_path:
+            file_path_label = QLabel(f"📁  {file_path}")
+            file_path_label.setWordWrap(True)
+            file_path_label.setStyleSheet("font-size: 10px; color: #3a3a3a;")
+            info_layout.addWidget(file_path_label)
+
         # ── Botão Assistir ───────────────────────────────────────────
         watch_btn = QPushButton("▶  Assistir")
         watch_btn.setCursor(Qt.PointingHandCursor)
