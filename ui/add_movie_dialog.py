@@ -114,6 +114,18 @@ class AutomaticMovieAddThread(QThread):
                 if self._movie_exists(file_path):
                     self.movie_processed.emit(clean_title, False, "Filme já existe no catálogo")
                     continue
+
+                # ── Checa cache local antes de chamar a API ──────────
+                local_info = self.movie_fetcher.load_local_info(file_path)
+                if local_info:
+                    new_movie = self.movie_manager.add_movie(local_info, file_path)
+                    if new_movie:
+                        self.movie_processed.emit(clean_title, True, f"{new_movie['title']} (cache local)")
+                    else:
+                        self.movie_processed.emit(clean_title, False, "Falha ao adicionar ao catálogo")
+                    continue
+
+                # ── Busca na API ─────────────────────────────────────
                 results = self.movie_fetcher.search_movie(clean_title)
                 if not results:
                     alt = self._alternative_term(clean_title)
@@ -126,18 +138,22 @@ class AutomaticMovieAddThread(QThread):
                 if not best:
                     self.movie_processed.emit(clean_title, False, "Nenhum resultado compatível")
                     continue
-                details = self.movie_fetcher.get_movie_details(best['id'])
+                details = self.movie_fetcher.get_movie_details(best["id"])
                 if not details:
                     self.movie_processed.emit(clean_title, False, "Falha ao obter detalhes")
                     continue
                 local_poster = None
                 if details.get("poster_path"):
-                    local_poster = self.movie_fetcher.download_poster(details["poster_path"], details["id"])
+                    local_poster = self.movie_fetcher.download_poster(
+                        details["poster_path"], details["id"], file_path
+                    )
                 info = self.movie_fetcher.extract_movie_info(details)
                 info["local_poster_path"] = local_poster
+                # Salva info.json e poster.jpg na pasta do filme
+                self.movie_fetcher.save_local_info(file_path, info)
                 new_movie = self.movie_manager.add_movie(info, file_path)
                 if new_movie:
-                    self.movie_processed.emit(clean_title, True, new_movie['title'])
+                    self.movie_processed.emit(clean_title, True, new_movie["title"])
                 else:
                     self.movie_processed.emit(clean_title, False, "Falha ao adicionar ao catálogo")
             except Exception as e:
@@ -183,19 +199,24 @@ class TMDBSearchThread(QThread):
 class MovieDetailsFetchThread(QThread):
     fetch_completed = pyqtSignal(dict)
 
-    def __init__(self, fetcher, movie_id):
+    def __init__(self, fetcher, movie_id, file_path=None):
         super().__init__()
         self.fetcher = fetcher
         self.movie_id = movie_id
+        self.file_path = file_path
 
     def run(self):
         details = self.fetcher.get_movie_details(self.movie_id)
         if details:
             local_poster = None
             if details.get("poster_path"):
-                local_poster = self.fetcher.download_poster(details["poster_path"], details["id"])
+                local_poster = self.fetcher.download_poster(
+                    details["poster_path"], details["id"], self.file_path
+                )
             info = self.fetcher.extract_movie_info(details)
             info["local_poster_path"] = local_poster
+            if self.file_path:
+                self.fetcher.save_local_info(self.file_path, info)
             self.fetch_completed.emit(info)
         else:
             self.fetch_completed.emit({})
@@ -486,6 +507,13 @@ class AddMovieDialog(QDialog):
             QMessageBox.information(self, "Filme já existe", "Este filme já existe no catálogo.")
             return
 
+        # Checa cache local antes de ir para a API
+        local_info = self.movie_fetcher.load_local_info(file_path)
+        if local_info:
+            self._show_movie_details(local_info)
+            self.add_log_message(f"Informações carregadas do cache local: {local_info.get('title', '')}")
+            return
+
         filename = os.path.basename(file_path)
         scan_thread = BatchScanThread("", self.movie_manager)
         clean_title = scan_thread.clean_movie_title(filename)
@@ -659,7 +687,7 @@ class AddMovieDialog(QDialog):
         progress.show()
         QApplication.processEvents()
 
-        self.details_thread = MovieDetailsFetchThread(self.movie_fetcher, movie_data["id"])
+        self.details_thread = MovieDetailsFetchThread(self.movie_fetcher, movie_data["id"], self.selected_file_path or None)
         self.details_thread.fetch_completed.connect(self._show_movie_details)
         self.details_thread.finished.connect(progress.close)
         self.details_thread.start()
@@ -699,19 +727,49 @@ class AddMovieDialog(QDialog):
             return
 
         if self.edit_mode:
-            # Modo edição: atualiza apenas capa e informações, mantém file_path e id
+            # Modo edição: baixa poster e salva info.json ANTES de chamar update_movie
+            # (update_movie apaga os arquivos locais antigos — precisamos recriar depois)
+            file_path = self.selected_file_path
+
+            # 1. Apaga arquivos locais antigos explicitamente
+            self.movie_fetcher.delete_local_files(file_path)
+
+            # 2. Baixa o novo poster para a pasta do filme
+            new_poster_path = None
+            poster_api_path = self.selected_movie_info.get("poster_path")
+            tmdb_id = self.selected_movie_info.get("id")
+            if poster_api_path and tmdb_id:
+                new_poster_path = self.movie_fetcher.download_poster(
+                    poster_api_path, tmdb_id, file_path
+                )
+
+            # 3. Salva info.json com os dados novos na pasta do filme
+            self.movie_fetcher.save_local_info(file_path, self.selected_movie_info)
+
+            # 4. Atualiza o catalog.json (sem apagar arquivos locais de novo)
             updated_info = {
-                "tmdb_id": self.selected_movie_info.get("id"),
+                "tmdb_id": tmdb_id,
                 "title": self.selected_movie_info.get("title"),
                 "original_title": self.selected_movie_info.get("original_title"),
                 "release_date": self.selected_movie_info.get("release_date"),
                 "overview": self.selected_movie_info.get("overview"),
-                "local_poster_path": self.selected_movie_info.get("local_poster_path"),
+                "local_poster_path": new_poster_path,
                 "genres": self.selected_movie_info.get("genres", []),
                 "runtime": self.selected_movie_info.get("runtime"),
                 "vote_average": self.selected_movie_info.get("vote_average"),
             }
-            result = self.movie_manager.update_movie(self.edit_movie["id"], updated_info)
+            # Atualiza direto no catálogo sem passar pelo delete de arquivos
+            movies = self.movie_manager.catalog.get("movies", [])
+            from datetime import datetime
+            for i, movie in enumerate(movies):
+                if movie.get("id") == self.edit_movie["id"]:
+                    movies[i].update(updated_info)
+                    movies[i]["last_updated"] = datetime.now().isoformat()
+                    break
+            self.movie_manager.catalog["movies"] = movies
+            self.movie_manager.save_catalog()
+            result = self.movie_manager.get_movie_by_id(self.edit_movie["id"])
+
             if result:
                 QMessageBox.information(self, "Sucesso",
                                         f"Filme '{result['title']}' atualizado com sucesso!")
@@ -723,6 +781,9 @@ class AddMovieDialog(QDialog):
             if self.skip_duplicates_checkbox.isChecked() and self._movie_exists(self.selected_file_path):
                 QMessageBox.information(self, "Filme já existe", "Este filme já existe no catálogo.")
                 return
+            # Salva info.json e poster.jpg na pasta do filme se ainda não existir
+            if not self.movie_fetcher.load_local_info(self.selected_file_path):
+                self.movie_fetcher.save_local_info(self.selected_file_path, self.selected_movie_info)
             new_movie = self.movie_manager.add_movie(self.selected_movie_info, self.selected_file_path)
             if new_movie:
                 QMessageBox.information(self, "Sucesso",
