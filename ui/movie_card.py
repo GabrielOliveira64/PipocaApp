@@ -3,7 +3,7 @@ import sys
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QPushButton, QMessageBox, QFrame, QApplication)
 from PyQt5.QtGui import QPixmap, QCursor, QPainter, QPainterPath
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal
 from ui.movie_info_page import MovieInfoOverlay
 
 
@@ -26,12 +26,14 @@ class RoundedLabel(QLabel):
 class MovieCard(QWidget):
     """Widget para exibir um cartão de filme com efeito hover."""
 
+    edit_requested = pyqtSignal(dict)  # Sinal emitido ao clicar em editar
+
     def __init__(self, movie, parent=None):
         super().__init__(parent)
         self.movie = movie
         self.setMouseTracking(True)
         self.hovered = False
-        self._overlay = None  # Referência ao overlay ativo
+        self._overlay = None
         self.init_ui()
 
     def init_ui(self):
@@ -69,7 +71,7 @@ class MovieCard(QWidget):
         self.poster_layout.addWidget(self.poster_label)
         self.container_layout.addWidget(self.poster_frame)
 
-        # Overlay (botões no hover)
+        # ── Overlay (aparece no hover) ───────────────────────────────
         self.overlay = QWidget(self.poster_frame)
         self.overlay.setObjectName("overlay")
         self.overlay.setFixedSize(200, 300)
@@ -82,14 +84,31 @@ class MovieCard(QWidget):
 
         self.overlay_layout = QVBoxLayout(self.overlay)
         self.overlay_layout.setContentsMargins(0, 0, 0, 0)
-        self.overlay_layout.setAlignment(Qt.AlignCenter)
+        self.overlay_layout.setSpacing(0)
+
+        # Botão editar — canto superior direito
+        top_row = QHBoxLayout()
+        top_row.setContentsMargins(0, 8, 8, 0)
+        top_row.addStretch()
+
+        self.edit_btn = QPushButton("✏")
+        self.edit_btn.setObjectName("editButton")
+        self.edit_btn.setFixedSize(30, 30)
+        self.edit_btn.setCursor(QCursor(Qt.PointingHandCursor))
+        self.edit_btn.setToolTip("Editar informações do filme")
+        self.edit_btn.clicked.connect(self.open_edit_dialog)
+        top_row.addWidget(self.edit_btn)
+
+        self.overlay_layout.addLayout(top_row)
+
+        # Botões Play + Info — centro
+        self.overlay_layout.addStretch()
 
         button_container = QHBoxLayout()
         button_container.setSpacing(10)
         button_container.setContentsMargins(0, 0, 0, 0)
         button_container.setAlignment(Qt.AlignCenter)
 
-        # Botão Play
         self.play_btn = QPushButton("▶")
         self.play_btn.setObjectName("playButton")
         self.play_btn.setFixedSize(50, 50)
@@ -97,7 +116,6 @@ class MovieCard(QWidget):
         self.play_btn.clicked.connect(self.play_movie)
         button_container.addWidget(self.play_btn)
 
-        # Botão Info
         self.info_btn = QPushButton("i")
         self.info_btn.setObjectName("infoButton")
         self.info_btn.setFixedSize(50, 50)
@@ -106,6 +124,8 @@ class MovieCard(QWidget):
         button_container.addWidget(self.info_btn)
 
         self.overlay_layout.addLayout(button_container)
+        self.overlay_layout.addStretch()
+
         self.overlay.hide()
 
         self.layout.addWidget(self.container)
@@ -145,10 +165,23 @@ class MovieCard(QWidget):
             QPushButton#infoButton:hover {
                 background-color: #555;
             }
+            QPushButton#editButton {
+                background-color: rgba(30, 30, 30, 0.85);
+                color: #ddd;
+                font-size: 13px;
+                border: 1px solid rgba(255,255,255,0.2);
+                border-radius: 15px;
+            }
+            QPushButton#editButton:hover {
+                background-color: #E50914;
+                color: white;
+                border: 1px solid #E50914;
+            }
         """)
         self.setFixedWidth(200)
         self.setFixedHeight(304)
 
+    # ── Hover ────────────────────────────────────────────────────────
     def enterEvent(self, event):
         self.hovered = True
         self.overlay.show()
@@ -159,24 +192,22 @@ class MovieCard(QWidget):
         self.overlay.hide()
         super().leaveEvent(event)
 
+    # ── Ações ────────────────────────────────────────────────────────
     def play_movie(self):
         file_path = self.movie.get("file_path")
         if file_path and os.path.exists(file_path):
             if sys.platform == "win32":
                 os.startfile(file_path)
             elif sys.platform == "darwin":
-                os.system(f"open \"{file_path}\"")
+                os.system(f'open "{file_path}"')
             else:
-                os.system(f"xdg-open \"{file_path}\"")
+                os.system(f'xdg-open "{file_path}"')
         else:
             QMessageBox.warning(self, "Erro", "Arquivo não encontrado!")
 
     def show_info(self):
         """Abre o overlay de informações dentro da janela principal."""
-        # Encontra a janela principal (QMainWindow)
         main_window = self.window()
-
-        # Cria (ou recria) o overlay com o widget central como pai
         central = main_window.centralWidget() if main_window else self
 
         if self._overlay is not None:
@@ -185,3 +216,33 @@ class MovieCard(QWidget):
 
         self._overlay = MovieInfoOverlay(self.movie, parent=central)
         self._overlay.show_overlay()
+
+    def open_edit_dialog(self):
+        """Abre o diálogo de edição pré-preenchido com os dados do filme."""
+        from ui.add_movie_dialog import AddMovieDialog
+
+        main_window = self.window()
+        dialog = AddMovieDialog(
+            movie_manager=self._get_movie_manager(),
+            parent=main_window,
+            edit_movie=self.movie      # <- passa o filme para modo edição
+        )
+        if dialog.exec_():
+            # Atualiza os dados locais do card e recarrega o poster
+            updated = self._get_movie_manager().get_movie_by_id(self.movie["id"])
+            if updated:
+                self.movie = updated
+                poster_path = updated.get("local_poster_path")
+                if poster_path and os.path.exists(poster_path):
+                    pixmap = QPixmap(poster_path).scaled(
+                        200, 300, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                    )
+                    self.poster_label.setPixmap(pixmap)
+
+    def _get_movie_manager(self):
+        """Retorna a instância de MovieManager da janela principal."""
+        from core.movie_manager import MovieManager
+        main_window = self.window()
+        if hasattr(main_window, "movie_manager"):
+            return main_window.movie_manager
+        return MovieManager()

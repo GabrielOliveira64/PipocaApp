@@ -257,8 +257,8 @@ class MainWindow(QMainWindow):
             if widget:
                 widget.deleteLater()
         self.grid_layout.setSpacing(0)
-        self.grid_layout.setHorizontalSpacing(0)
-        self.grid_layout.setVerticalSpacing(10)
+        self.grid_layout.setHorizontalSpacing(16)
+        self.grid_layout.setVerticalSpacing(16)
         self.grid_layout.setContentsMargins(0, 0, 0, 0)
         movies = self.movie_manager.get_all_movies()
         self.sidebar.populate_genres(movies)
